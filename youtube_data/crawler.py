@@ -1,10 +1,11 @@
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import pandas as pd
 import time
-import hashlib
 from datetime import datetime, timedelta
-from googleapiclient.errors import HttpError
+import hashlib
 
+# ✅ 사용자 설정
 API_KEYS = [
     "AIzaSyBn1v3HjJWhqh_YHyF6sJkV41cOyLabemI",
     "AIzaSyAg6WNmdx7MYigHbrA1TMf6cO89tuuqSX8",
@@ -13,139 +14,137 @@ API_KEYS = [
     "AIzaSyD80A71_82-_WTDVYruqPBTG0fr034ajBk"
 ]
 
-def get_video_hash(video_id):
-    return hashlib.md5(video_id.encode()).hexdigest()
+CHANNEL_IDS = [
+    "UCugbqfMO94F9guLEb6Olb2A",  # 한겨레
+    "UCF4Wxdo3inmxP-Y59wXDsFw",  # MBC
+    "UCv3Y5Qz3z4Y2I4r0U7p9L2g",  # 경향
+    "UCnHyx6H7fhKfUoAAaVGYvxQ",  # 동아
+    "UCaVj4kzU4A5n4D9x3Gx3Gxw",  # 조선
+    "UCH3mJ-nHxjjny2FJbJaqiDA"   # 중앙
+]
+KEYWORDS = ["대선", "윤석열", "이재명"]
 
-def generate_date_ranges(start_date, end_date):
-    current = start_date
-    while current < end_date:
-        next_day = current + timedelta(days=1)
-        yield current, next_day
-        current = next_day
+START_DATE = "2022-03-01"
+END_DATE = "2022-03-10"
 
+# ✅ 도우미 함수
 def get_youtube_service(api_key):
     return build("youtube", "v3", developerKey=api_key)
 
-def search_videos(youtube, channel_id, query, published_after, published_before, video_hash_set):
+def get_video_hash(video_id):
+    return hashlib.md5(video_id.encode()).hexdigest()
+
+def generate_date_ranges(start, end):
+    current = start
+    while current < end:
+        yield current, current + timedelta(days=1)
+        current += timedelta(days=1)
+
+# ✅ 영상 검색 함수 (제목+설명 기준 필터링)
+def search_videos(youtube, channel_id, query, start_date, end_date, seen_videos):
     videos = []
-    request = youtube.search().list(
-        part="snippet",
-        channelId=channel_id,
-        q=query,
-        type="video",
-        publishedAfter=published_after.isoformat("T") + "Z",
-        publishedBefore=published_before.isoformat("T") + "Z",
-        maxResults=5
-    )
-    response = request.execute()
-    for item in response["items"]:
-        video_id = item["id"]["videoId"]
-        vid_hash = get_video_hash(video_id)
-        if vid_hash in video_hash_set:
-            continue
-        video_hash_set.add(vid_hash)
-        videos.append({
-            "video_id": video_id,
-            "title": item["snippet"]["title"],
-            "channel_title": item["snippet"]["channelTitle"]
-        })
+    next_page_token = None
+    while True:
+        request = youtube.search().list(
+            part="snippet",
+            channelId=channel_id,
+            q=query,
+            type="video",
+            publishedAfter=start_date.isoformat() + "Z",
+            publishedBefore=end_date.isoformat() + "Z",
+            maxResults=50,
+            pageToken=next_page_token
+        )
+        response = request.execute()
+        for item in response.get("items", []):
+            snippet = item["snippet"]
+            title = snippet.get("title", "")
+            description = snippet.get("description", "")
+            if query not in (title + description):
+                continue
+            video_id = item["id"]["videoId"]
+            if video_id in seen_videos:
+                continue
+            seen_videos.add(video_id)
+            videos.append(video_id)
+        next_page_token = response.get("nextPageToken")
+        if not next_page_token:
+            break
     return videos
 
+# ✅ 영상 정보 + 댓글 수집
+
 def get_video_info(youtube, video_id):
-    request = youtube.videos().list(part="snippet,statistics", id=video_id)
-    response = request.execute()
+    response = youtube.videos().list(part="snippet,statistics", id=video_id).execute()
     item = response["items"][0]
     return {
-        "title": item["snippet"]["title"],
-        "channel_title": item["snippet"]["channelTitle"],
-        "view_count": item["statistics"].get("viewCount", 0),
-        "like_count": item["statistics"].get("likeCount", 0)
+        "video_id": video_id,
+        "video_title": item["snippet"]["title"],
+        "channel": item["snippet"]["channelTitle"],
+        "video_published": item["snippet"]["publishedAt"],
+        "video_views": item["statistics"].get("viewCount", 0),
+        "video_likes": item["statistics"].get("likeCount", 0),
+        "video_comment_count": item["statistics"].get("commentCount", 0),
+        "video_category_id": item["snippet"].get("categoryId", "")
     }
 
-def get_top_comments(youtube, video_id, top_p=3):
-    request = youtube.commentThreads().list(
-        part="snippet",
-        videoId=video_id,
-        maxResults=100,
-        textFormat="plainText"
-    )
-    response = request.execute()
-    all_comments = []
-    for item in response.get("items", []):
-        top_comment = item["snippet"]["topLevelComment"]["snippet"]
-        comment_data = {
-            "text": top_comment["textDisplay"],
-            "like_count": int(top_comment.get("likeCount", 0))
-        }
-        all_comments.append(comment_data)
-    top_comments = sorted(all_comments, key=lambda c: c["like_count"], reverse=True)[:top_p]
-    return top_comments
+def get_all_comments(youtube, video_id):
+    comments = []
+    next_page_token = None
+    while True:
+        response = youtube.commentThreads().list(
+            part="snippet",
+            videoId=video_id,
+            maxResults=100,
+            textFormat="plainText",
+            pageToken=next_page_token
+        ).execute()
+        for item in response.get("items", []):
+            top_comment = item["snippet"]["topLevelComment"]["snippet"]
+            comments.append({
+                "comment_author_id": top_comment.get("authorChannelId", {}).get("value", "N/A"),
+                "comment_text": top_comment.get("textDisplay", ""),
+                "comment_published": top_comment.get("publishedAt", ""),
+                "comment_likes": top_comment.get("likeCount", 0)
+            })
+        next_page_token = response.get("nextPageToken")
+        if not next_page_token:
+            break
+    return comments
 
-def run_crawler(start_date_str, end_date_str, output_file="youtube_comments_all.csv"):
-    keywords = ["윤석열", "이재명", "안철수", "심상정", "대선", "후보자", "국민의힘", "더불어민주당", "지지율", "TV토론", "공약"]
-    channel_ids = [
-        "UCugbqfMO94F9guLEb6Olb2A",
-        "UCF4Wxdo3inmxP-Y59wXDsFw",
-        "UCv3Y5Qz3z4Y2I4r0U7p9L2g",
-        "UCnHyx6H7fhKfUoAAaVGYvxQ",
-        "UCaVj4kzU4A5n4D9x3Gx3Gxw",
-        "UCH3mJ-nHxjjny2FJbJaqiDA"
-    ]
+# ✅ 크롤링 실행
 
-    start_date = datetime.fromisoformat(start_date_str)
-    end_date = datetime.fromisoformat(end_date_str)
-    all_results = []
+def run_full_crawler():
+    start_date = datetime.fromisoformat(START_DATE)
+    end_date = datetime.fromisoformat(END_DATE)
+    seen_videos = set()
+    results = []
 
-    for day_start, day_end in generate_date_ranges(start_date, end_date):
-        print(f"\n📅 {day_start.date()} 수집 시작")
-        video_hash_set = set()
-        success = False
+    for single_date, next_date in generate_date_ranges(start_date, end_date):
+        print(f"📅 {single_date.date()} 수집 중...")
         for api_key in API_KEYS:
             try:
                 youtube = get_youtube_service(api_key)
-                day_results = []
-                for channel_id in channel_ids:
-                    for keyword in keywords:
-                        videos = search_videos(youtube, channel_id, keyword, day_start, day_end, video_hash_set)
-                        for video in videos:
-                            video_id = video["video_id"]
-                            info = get_video_info(youtube, video_id)
-                            top_comments = get_top_comments(youtube, video_id, top_p=3)
-                            for comment in top_comments:
-                                row = {
-                                    "date": str(day_start.date()),
-                                    "video_id": video_id,
-                                    "video_title": info["title"],
-                                    "channel": info["channel_title"],
-                                    "views": info["view_count"],
-                                    "video_likes": info["like_count"],
-                                    "comment": comment["text"],
-                                    "comment_likes": comment["like_count"]
-                                }
-                                day_results.append(row)
-                if day_results:
-                    all_results.extend(day_results)
-                else:
-                    print(f"⚠️ {day_start.date()}에 수집된 댓글 없음")
-                success = True
-                break
+                for channel_id in CHANNEL_IDS:
+                    for keyword in KEYWORDS:
+                        video_ids = search_videos(youtube, channel_id, keyword, single_date, next_date, seen_videos)
+                        for vid in video_ids:
+                            info = get_video_info(youtube, vid)
+                            comments = get_all_comments(youtube, vid)
+                            for c in comments:
+                                results.append({**info, **c})
+                break  # API 키 성공 시 반복 종료
             except HttpError as e:
                 if e.resp.status == 403 and "quota" in str(e).lower():
-                    print(f"🔁 quotaExceeded: API 키 교체 시도")
+                    print("⚠️ quotaExceeded → 다음 키로 전환")
                     continue
                 else:
-                    print(f"[에러] {day_start.date()} 처리 중 오류 발생: {e}")
+                    print("❌ 기타 오류 발생:", e)
                     break
-        if not success:
-            print(f"❌ 모든 키 실패: {day_start.date()}는 건너뜀")
         time.sleep(1)
 
-    if all_results:
-        df = pd.DataFrame(all_results)
-        df.to_csv(output_file, index=False, encoding='utf-8-sig')
-        print(f"\n✅ 전체 저장 완료: {output_file} ({len(df)}개 댓글)")
-    else:
-        print("\n⚠️ 수집된 결과가 없습니다.")
+    df = pd.DataFrame(results)
+    df.to_csv("youtube_comments_full.csv", index=False, encoding="utf-8-sig")
+    print(f"✅ 저장 완료: {len(df)}개 댓글 수집됨")
 
-if __name__ == "__main__":
-    run_crawler("2022-01-01", "2022-03-10")
+run_full_crawler()
