@@ -3,148 +3,229 @@ from googleapiclient.errors import HttpError
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-import hashlib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
-# ✅ 사용자 설정
+# ——————————————————————————
+# 설정
+# ——————————————————————————
 API_KEYS = [
-    "AIzaSyBn1v3HjJWhqh_YHyF6sJkV41cOyLabemI",
-    "AIzaSyAg6WNmdx7MYigHbrA1TMf6cO89tuuqSX8",
-    "AIzaSyBujNpcCzdVU4QBstIIXNR2yc85WxYWdHQ",
-    "AIzaSyClz3cRUGIoe7ql0-KAP2b-tTIcONJkOzo",
-    "AIzaSyD80A71_82-_WTDVYruqPBTG0fr034ajBk"
+    "AIzaSyBn1v3HjJWhqh_YHyF6sJkV41cOyLabemI", # 1
+    "AIzaSyAg6WNmdx7MYigHbrA1TMf6cO89tuuqSX8", # 2
+    "AIzaSyBujNpcCzdVU4QBstIIXNR2yc85WxYWdHQ", # 3
+    "AIzaSyClz3cRUGIoe7ql0-KAP2b-tTIcONJkOzo", # 4
+    "AIzaSyD80A71_82-_WTDVYruqPBTG0fr034ajBk", # 5
+    "AIzaSyDFhQRYh_cZ6lAgjRgFQYl9BzaTE58Qh1Q", # 6
+    "AIzaSyCmZxMmIIyBNfw6tR_5-xQUdlPMlVHU-_8", # 7
+    "AIzaSyBh265b37BHH_0j62feHIcqXH7QYDaV-Ag", # 8
+    "AIzaSyCWPFZYM197mcRNCFac5klW-WPhLjbQk74", # 9
+    "AIzaSyDMRehGlKMt-Dy2czwz6DbAco18hL_qdR8", # 10
 ]
 
 CHANNEL_IDS = [
     "UCugbqfMO94F9guLEb6Olb2A",  # 한겨레
     "UCF4Wxdo3inmxP-Y59wXDsFw",  # MBC
-    "UCv3Y5Qz3z4Y2I4r0U7p9L2g",  # 경향
+    "UCHXvjavEtkPFJCfGlm0wTXw",  # 경향
     "UCnHyx6H7fhKfUoAAaVGYvxQ",  # 동아
-    "UCaVj4kzU4A5n4D9x3Gx3Gxw",  # 조선
+    "UCWlV3Lz_55UaX4JsMj-z__Q",  # 조선
     "UCH3mJ-nHxjjny2FJbJaqiDA"   # 중앙
 ]
+
 KEYWORDS = ["대선", "윤석열", "이재명"]
-
 START_DATE = "2022-03-01"
-END_DATE = "2022-03-10"
+END_DATE   = "2022-03-09"
+TOTAL_LIMIT = 300_000
+PER_CHANNEL_LIMIT = TOTAL_LIMIT // len(CHANNEL_IDS)
+POLITICS_CATEGORY = "25"  # News & Politics
 
-# ✅ 도우미 함수
-def get_youtube_service(api_key):
-    return build("youtube", "v3", developerKey=api_key)
+# ——————————————————————————
+# 전역 변수 초기화
+# ——————————————————————————
+_exhausted = set()
+_services = {}
+results = []
+counts = {cid: 0 for cid in CHANNEL_IDS}
+video_queues = {cid: deque() for cid in CHANNEL_IDS}
 
-def get_video_hash(video_id):
-    return hashlib.md5(video_id.encode()).hexdigest()
+# ——————————————————————————
+# 헬퍼 함수
+# ——————————————————————————
+def get_svc(key):
+    if key not in _services:
+        _services[key] = build("youtube", "v3", developerKey=key)
+    return _services[key]
 
-def generate_date_ranges(start, end):
-    current = start
-    while current < end:
-        yield current, current + timedelta(days=1)
-        current += timedelta(days=1)
-
-# ✅ 영상 검색 함수 (제목+설명 기준 필터링)
-def search_videos(youtube, channel_id, query, start_date, end_date, seen_videos):
-    videos = []
-    next_page_token = None
-    while True:
-        request = youtube.search().list(
-            part="snippet",
-            channelId=channel_id,
-            q=query,
-            type="video",
-            publishedAfter=start_date.isoformat() + "Z",
-            publishedBefore=end_date.isoformat() + "Z",
-            maxResults=50,
-            pageToken=next_page_token
-        )
-        response = request.execute()
-        for item in response.get("items", []):
-            snippet = item["snippet"]
-            title = snippet.get("title", "")
-            description = snippet.get("description", "")
-            if query not in (title + description):
+def rotate_call(fn, *args, **kwargs):
+    for k in API_KEYS:
+        if k in _exhausted: continue
+        try:
+            return fn(get_svc(k), *args, **kwargs)
+        except HttpError as e:
+            if e.resp.status == 403 and "quota" in str(e).lower():
+                print(f"⚠️ {k} quotaExceeded → 제외")
+                _exhausted.add(k)
                 continue
-            video_id = item["id"]["videoId"]
-            if video_id in seen_videos:
-                continue
-            seen_videos.add(video_id)
-            videos.append(video_id)
-        next_page_token = response.get("nextPageToken")
-        if not next_page_token:
-            break
-    return videos
+            else:
+                raise
+    raise RuntimeError("모든 키 소진됨")
 
-# ✅ 영상 정보 + 댓글 수집
-
-def get_video_info(youtube, video_id):
-    response = youtube.videos().list(part="snippet,statistics", id=video_id).execute()
-    item = response["items"][0]
-    return {
-        "video_id": video_id,
-        "video_title": item["snippet"]["title"],
-        "channel": item["snippet"]["channelTitle"],
-        "video_published": item["snippet"]["publishedAt"],
-        "video_views": item["statistics"].get("viewCount", 0),
-        "video_likes": item["statistics"].get("likeCount", 0),
-        "video_comment_count": item["statistics"].get("commentCount", 0),
-        "video_category_id": item["snippet"].get("categoryId", "")
+def search_videos(svc, channelId, q, start, end, pageToken=None, category=None):
+    params = {
+        "part": "id",
+        "channelId": channelId,
+        "type": "video",
+        "publishedAfter": start + "Z",
+        "publishedBefore": end + "Z",
+        "maxResults": 50,
+        "pageToken": pageToken,
+        "fields": "nextPageToken,items(id/videoId)"
     }
+    if q:
+        params["q"] = q
+    if category:
+        params["videoCategoryId"] = category
+    return svc.search().list(**params).execute()
 
-def get_all_comments(youtube, video_id):
-    comments = []
-    next_page_token = None
-    while True:
-        response = youtube.commentThreads().list(
-            part="snippet",
-            videoId=video_id,
-            maxResults=100,
-            textFormat="plainText",
-            pageToken=next_page_token
-        ).execute()
-        for item in response.get("items", []):
-            top_comment = item["snippet"]["topLevelComment"]["snippet"]
-            comments.append({
-                "comment_author_id": top_comment.get("authorChannelId", {}).get("value", "N/A"),
-                "comment_text": top_comment.get("textDisplay", ""),
-                "comment_published": top_comment.get("publishedAt", ""),
-                "comment_likes": top_comment.get("likeCount", 0)
-            })
-        next_page_token = response.get("nextPageToken")
-        if not next_page_token:
-            break
-    return comments
+def fetch_video_info(svc, videoId):
+    return svc.videos().list(
+        part="snippet,statistics",
+        id=videoId,
+        fields="items(snippet(title,channelTitle,publishedAt,categoryId,tags),"
+               "statistics(viewCount,likeCount,commentCount))"
+    ).execute()
 
-# ✅ 크롤링 실행
+def fetch_comments(svc, videoId, pageToken=None):
+    return svc.commentThreads().list(
+        part="snippet",
+        videoId=videoId,
+        maxResults=100,
+        pageToken=pageToken,
+        textFormat="plainText",
+        fields="nextPageToken,items/snippet/topLevelComment/snippet("
+               "authorChannelId/value,textDisplay,publishedAt,likeCount)"
+    ).execute()
 
-def run_full_crawler():
-    start_date = datetime.fromisoformat(START_DATE)
-    end_date = datetime.fromisoformat(END_DATE)
-    seen_videos = set()
-    results = []
+def fetch_channel_uploads(svc, channelId, pageToken=None):
+    # 채널 업로드 플레이리스트 ID 조회
+    ch_resp = svc.channels().list(
+        part="contentDetails",
+        id=channelId,
+        fields="items/contentDetails/relatedPlaylists/uploads"
+    ).execute()
+    items = ch_resp.get("items")
+    if not items:
+        # 채널 정보가 없으면 빈 결과 반환
+        return {"items": [], "nextPageToken": None}
 
-    for single_date, next_date in generate_date_ranges(start_date, end_date):
-        print(f"📅 {single_date.date()} 수집 중...")
-        for api_key in API_KEYS:
-            try:
-                youtube = get_youtube_service(api_key)
-                for channel_id in CHANNEL_IDS:
-                    for keyword in KEYWORDS:
-                        video_ids = search_videos(youtube, channel_id, keyword, single_date, next_date, seen_videos)
-                        for vid in video_ids:
-                            info = get_video_info(youtube, vid)
-                            comments = get_all_comments(youtube, vid)
-                            for c in comments:
-                                results.append({**info, **c})
-                break  # API 키 성공 시 반복 종료
-            except HttpError as e:
-                if e.resp.status == 403 and "quota" in str(e).lower():
-                    print("⚠️ quotaExceeded → 다음 키로 전환")
-                    continue
-                else:
-                    print("❌ 기타 오류 발생:", e)
+    upload_pl = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    # 업로드 플레이리스트에서 영상 ID 조회
+    pl_resp = svc.playlistItems().list(
+        part="contentDetails",
+        playlistId=upload_pl,
+        maxResults=50,
+        pageToken=pageToken,
+        fields="nextPageToken,items/contentDetails/videoId"
+    ).execute()
+    return pl_resp
+
+# ——————————————————————————
+# Phase 1: 영상 ID 큐 생성
+# ——————————————————————————
+start = datetime.fromisoformat(START_DATE)
+end   = datetime.fromisoformat(END_DATE)
+for d in range((end - start).days):
+    day1 = (start + timedelta(days=d)).isoformat()
+    day2 = (start + timedelta(days=d+1)).isoformat()
+
+    for cid in CHANNEL_IDS:
+        # 키워드별
+        for kw in KEYWORDS:
+            token = None
+            while True:
+                resp = rotate_call(search_videos, cid, kw, day1, day2, token)
+                for it in resp.get("items", []):
+                    video_queues[cid].append(it["id"]["videoId"])
+                token = resp.get("nextPageToken")
+                if not token:
                     break
-        time.sleep(1)
+        # 카테고리별
+        token = None
+        while True:
+            resp = rotate_call(search_videos, cid, None, day1, day2, token, category=POLITICS_CATEGORY)
+            for it in resp.get("items", []):
+                video_queues[cid].append(it["id"]["videoId"])
+            token = resp.get("nextPageToken")
+            if not token:
+                break
+    
+        if not video_queues[cid]:
+            token2 = None
+            while True:
+                resp2 = rotate_call(fetch_channel_uploads, cid, token2)
+                for it2 in resp2.get("items", []):
+                    video_queues[cid].append(it2["contentDetails"]["videoId"])
+                token2 = resp2.get("nextPageToken")
+                if not token2:
+                    break
 
-    df = pd.DataFrame(results)
-    df.to_csv("youtube_comments_full.csv", index=False, encoding="utf-8-sig")
-    print(f"✅ 저장 완료: {len(df)}개 댓글 수집됨")
+# ——————————————————————————
+# Phase 2: 라운드로빈 댓글 수집
+# ——————————————————————————
+done_all = False
+while sum(counts.values()) < TOTAL_LIMIT and not done_all:
+    done_all = True
+    for cid in CHANNEL_IDS:
+        if counts[cid] >= PER_CHANNEL_LIMIT or not video_queues[cid]:
+            continue
+        done_all = False
+        vid = video_queues[cid].popleft()
 
-run_full_crawler()
+        # 영상 정보
+        info = rotate_call(fetch_video_info, vid)["items"][0]
+        # 태그 정보 수집 X ; 댓글 수집 적게 되는 채널
+        '''
+        tags = info["snippet"].get("tags", [])
+        if not any(kw in tag for tag in KEYWORDS for tag in tags):
+            continue
+        '''
+        base = {
+            "video_id": vid,
+            "channel": info["snippet"]["channelTitle"],
+            "video_title": info["snippet"]["title"],
+            "video_published": info["snippet"]["publishedAt"],
+            "video_views": info["statistics"].get("viewCount", 0),
+            "video_likes": info["statistics"].get("likeCount", 0),
+            "video_comment_count": info["statistics"].get("commentCount", 0),
+            "video_category_id": info["snippet"]["categoryId"]
+        }
+
+        # 댓글 수집
+        token = None
+        while counts[cid] < PER_CHANNEL_LIMIT:
+            crep = rotate_call(fetch_comments, vid, token)
+            for th in crep.get("items", []):
+                c = th["snippet"]["topLevelComment"]["snippet"]
+                results.append({**base,
+                    "comment_author_id": c["authorChannelId"]["value"],
+                    "comment_text":      c["textDisplay"],
+                    "comment_published": c["publishedAt"],
+                    "comment_likes":     c["likeCount"]
+                })
+                counts[cid] += 1
+                if counts[cid] >= PER_CHANNEL_LIMIT or sum(counts.values()) >= TOTAL_LIMIT:
+                    break
+            token = crep.get("nextPageToken")
+            if not token or counts[cid] >= PER_CHANNEL_LIMIT:
+                break
+
+        time.sleep(0.1)
+    # end for CHANNEL_IDS
+# end while
+
+# ——————————————————————————
+# 결과 저장
+# ——————————————————————————
+pd.DataFrame(results).to_csv("youtube_comments_full.csv", index=False, encoding="utf-8-sig")
+print("채널별 counts:", counts)
+print("총 댓글:", len(results))
