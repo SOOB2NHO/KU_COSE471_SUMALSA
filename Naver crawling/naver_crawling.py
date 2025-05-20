@@ -9,8 +9,8 @@ import os
 
 # ✅ 키워드 리스트
 keywords = ["대선", "이재명", "윤석열", "안철수"]
-start_date_str = "2022.01.01"
-end_date_str = "2022.03.10"
+start_date_str = "2022.03.01"
+end_date_str = "2022.03.08"
 max_articles_per_keyword = 1500  # ✅ 수집 제한
 
 headers = {
