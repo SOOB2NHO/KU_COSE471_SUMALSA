@@ -7,17 +7,17 @@ from datetime import datetime, timedelta
 import time
 import os
 
-# ✅ 키워드 리스트
-keywords = ["대선", "이재명", "윤석열", "안철수"]
-start_date_str = "2022.03.01"
-end_date_str = "2022.03.08"
-max_articles_per_keyword = 1500  # ✅ 수집 제한
+# 키워드 리스트
+keywords = ["안철수"]
+start_date_str = "2022.03.02"
+end_date_str = "2022.03.03"
+max_articles_per_keyword = 1500  # 수집 제한
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 
-# ✅ 셀레니움 설정
+# 셀레니움 설정
 options = Options()
 options.add_argument("--headless")
 options.add_argument("--disable-gpu")
@@ -27,7 +27,7 @@ driver = webdriver.Chrome(options=options)
 def str_to_date(s):
     return datetime.strptime(s, "%Y.%m.%d")
 
-# ✅ 기사 본문 파싱 함수 (내용 제외)
+# 기사 본문 파싱 함수 (내용 제외)
 def fetch_article_content(url):
     def parse_soup(soup):
         title = (
@@ -87,7 +87,7 @@ def collect_news_links(search_url):
 # ✅ 키워드별 전체 크롤링 루프
 for keyword in keywords:
     print(f"\n🔍 키워드 [{keyword}] 크롤링 시작")
-    file_name = f"all_news_{keyword}_20220101~20220310.xlsx"
+    file_name = f"all_news_{keyword}_20250527~20250528.xlsx"
 
     if os.path.exists(file_name):
         wb = load_workbook(file_name)
