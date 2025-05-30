@@ -8,10 +8,10 @@ import time
 import os
 
 # 키워드 리스트
-keywords = ["안철수"]
-start_date_str = "2022.03.02"
-end_date_str = "2022.03.03"
-max_articles_per_keyword = 1500  # 수집 제한
+keywords = ["이재명, 김문수, 이준석, 대선"]
+start_date_str = "2025.05.19"
+end_date_str = "2025.05.21"
+max_articles_per_keyword = 6000  # 수집 제한
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -87,7 +87,7 @@ def collect_news_links(search_url):
 # ✅ 키워드별 전체 크롤링 루프
 for keyword in keywords:
     print(f"\n🔍 키워드 [{keyword}] 크롤링 시작")
-    file_name = f"all_news_{keyword}_20250527~20250528.xlsx"
+    file_name = f"all_news_{keyword}_20250519~20250521.xlsx"
 
     if os.path.exists(file_name):
         wb = load_workbook(file_name)

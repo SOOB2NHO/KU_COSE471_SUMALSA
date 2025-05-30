@@ -104,7 +104,7 @@ def optimized_filter_bot_comments(df):
     # 5) 통합 & 봇 판정 (민감도 ↑)
     stats = stats.join(ai_stats, how='left').fillna(0)
 
-    # 1) 빠른 속도: 댓글 ≥5개 & 시간 분산(hr) <0.2
+    # 1) 빠른 속도: 댓글 ≥5개 & 시간 분산(hr) < 0.2
     stats['cond_speed'] = (
         (stats['comment_count'] >= 5) &
         (stats['time_var_hr'] < 0.2)
@@ -149,7 +149,7 @@ def optimized_filter_bot_comments(df):
 # ———————————————————————————————————————————————————————————
 if __name__ == "__main__":
     # (1) 원본 엑셀에서 URL 불러오기
-    excel_path = "/Users/hosubin/Desktop/all_news_김문수_20250527~20250528.xlsx"
+    excel_path = "/Users/hosubin/Desktop/ubuntu_data/Data Science/21대 대선/기사/all_news_이재명, 이준석, 김문수, 대선_20250519~20250521.xlsx"
     df_urls    = pd.read_excel(excel_path)
     urls       = df_urls['Naverlink'] if 'Naverlink' in df_urls else df_urls['URL']
 
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     filtered_df, stats_df = optimized_filter_bot_comments(comments_df)
 
     # (4) 결과 저장
-    filtered_df.to_csv('filtered_comments_김문수.csv', index=False, encoding='utf-8-sig')
-    stats_df.to_csv('bot_analysis_stats_김문수.csv', index=False, encoding='utf-8-sig')
+    filtered_df.to_csv('filtered_comments_이재명, 이준석, 김문수, 대선_20250519~20250521.csv', index=False, encoding='utf-8-sig')
+    stats_df.to_csv('bot_analysis_stats_이재명, 이준석, 김문수, 대선_20250519~20250521.csv', index=False, encoding='utf-8-sig')
 
     print("✅ 완료! filtered_comments.csv 와 bot_analysis_stats.csv 생성되었습니다.")
